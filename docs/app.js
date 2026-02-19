@@ -18,6 +18,30 @@ function defaultPlayerState() {
   return { snapshot: { items: [], meta: {} }, lastImportLocal: null, lastSyncedRemote: null, warnings: [] };
 }
 
+function hasLocalSnapshot(player) {
+  const pdata = state.data.players[player];
+  return Boolean(pdata.lastImportLocal && pdata.snapshot.items.length > 0);
+}
+
+function canSyncPlayer(player) {
+  const pdata = state.data.players[player];
+  return hasLocalSnapshot(player) && pdata.snapshot.meta?.source === "tsv";
+}
+
+function getFreshnessIndicator(player) {
+  const local = state.data.players[player];
+  const remoteUpdatedUtc = state.remote.players?.[player]?.lastUpdatedUtc;
+  if (!local.lastImportLocal || !remoteUpdatedUtc) return "In sync";
+  const localTs = new Date(local.lastImportLocal).getTime();
+  const remoteTs = new Date(remoteUpdatedUtc).getTime();
+  if (Number.isNaN(localTs) || Number.isNaN(remoteTs) || localTs === remoteTs) return "In sync";
+  return remoteTs > localTs ? "Remote newer" : "Local newer";
+}
+
+function isRemoteNewerThanLocal(player) {
+  return getFreshnessIndicator(player) === "Remote newer";
+}
+
 function loadState() {
   const raw = localStorage.getItem(STORAGE_KEY);
   if (raw) {
@@ -99,7 +123,7 @@ function renderPlayerShell(player) {
   view.warnings = q(".warnings");
   view.summary = {
     unique: q(".sumUnique"), totalQty: q(".sumTotalQty"), imported: q(".sumImported"),
-    synced: q(".sumSynced"), updated: q(".sumUpdated"), status: q(".sumStatus"),
+    synced: q(".sumSynced"), updated: q(".sumUpdated"), refresh: q(".sumRefresh"), status: q(".sumStatus"),
   };
 
   view.dropZone.addEventListener("click", () => view.fileInput.click());
@@ -177,14 +201,18 @@ function renderPlayerSummary(player) {
   const pdata = state.data.players[player];
   const remote = state.remote.players[player];
   const totalQty = pdata.snapshot.items.reduce((sum, i) => sum + i.qty, 0);
-  const remoteNewer = remote?.lastUpdatedUtc && pdata.lastImportLocal && new Date(remote.lastUpdatedUtc) > new Date(pdata.lastImportLocal);
   const view = state.views[player];
+  const indicator = getFreshnessIndicator(player);
+  const syncAllowed = canSyncPlayer(player);
   view.summary.unique.textContent = pdata.snapshot.items.length;
   view.summary.totalQty.textContent = totalQty;
   view.summary.imported.textContent = formatTs(pdata.lastImportLocal);
   view.summary.synced.textContent = formatTs(pdata.lastSyncedRemote);
   view.summary.updated.textContent = formatTs(remote?.lastUpdatedUtc);
-  view.summary.status.textContent = remoteNewer ? "Remote is newer (consider Pull latest)" : "Ready";
+  view.summary.refresh.textContent = formatTs(state.remote.lastRefreshUtc);
+  view.summary.status.textContent = indicator;
+  view.syncNowBtn.disabled = !syncAllowed;
+  view.syncNowBtn.title = syncAllowed ? "" : "Import TSV with at least one item before syncing.";
   view.warnings.innerHTML = pdata.warnings.map((w) => `<li>${escapeHtml(w)}</li>`).join("");
 }
 
@@ -206,19 +234,41 @@ async function apiPost(payload) {
   return res.json();
 }
 
-async function refreshRemote() {
+function hydrateLocalFromRemote({ force = false, onlyIfEmpty = false } = {}) {
+  let changed = false;
+  PLAYERS.forEach((player) => {
+    const remote = state.remote.players?.[player];
+    const local = state.data.players[player];
+    if (!remote?.snapshot) return;
+    const localEmpty = !local.snapshot.items.length;
+    if (!force && onlyIfEmpty && !localEmpty) return;
+    if (!force && !onlyIfEmpty) return;
+    local.snapshot = remote.snapshot;
+    local.lastImportLocal = remote.lastUpdatedUtc || new Date().toISOString();
+    local.warnings = [];
+    changed = true;
+  });
+  if (changed) saveState();
+}
+
+async function refreshRemote({ hydrateLocal = false, onlyIfEmpty = false } = {}) {
   try {
     const data = await apiGet();
     state.remote = { ...state.remote, ...data, lastRefreshUtc: new Date().toISOString() };
+    if (hydrateLocal) hydrateLocalFromRemote({ force: !onlyIfEmpty, onlyIfEmpty });
     renderAll();
+    return true;
   } catch (err) {
     document.getElementById("globalStatus").textContent = `Offline or endpoint unreachable: ${err.message}`;
+    return false;
   }
 }
 
 async function syncNow(player) {
   const secret = state.data.settings.secret;
   if (!secret) { alert("Set shared secret first."); return; }
+  if (!canSyncPlayer(player)) { alert("Import TSV with at least one item before syncing."); return; }
+  if (isRemoteNewerThanLocal(player) && !confirm("Remote snapshot is newer than your local import. Syncing now will overwrite remote data. Continue?")) return;
   const snapshot = state.data.players[player].snapshot;
   try {
     await apiPost({ secret, player, snapshot });
@@ -228,14 +278,16 @@ async function syncNow(player) {
   } catch (err) { alert(`Sync failed: ${err.message}`); }
 }
 
-function pullLatest(player) {
+async function pullLatest(player) {
+  await refreshRemote();
   const remote = state.remote.players[player];
   if (!remote?.snapshot) { alert("No remote snapshot found for this player."); return; }
   const local = state.data.players[player];
   const remoteNewer = remote.lastUpdatedUtc && local.lastImportLocal && new Date(remote.lastUpdatedUtc) > new Date(local.lastImportLocal);
   if (remoteNewer && local.snapshot.items.length && !confirm("Remote is newer and will overwrite local snapshot. Continue?")) return;
   local.snapshot = remote.snapshot;
-  local.lastImportLocal = new Date().toISOString();
+  local.lastImportLocal = remote.lastUpdatedUtc || new Date().toISOString();
+  local.snapshot.meta = { ...(local.snapshot.meta || {}), source: "remote" };
   local.warnings = [];
   saveState();
   renderAll();
@@ -327,6 +379,7 @@ function initSettings() {
     state.data.settings.secret = secret.value;
     saveState();
     status.textContent = "Settings saved.";
+    if (state.data.settings.endpointUrl) refreshRemote({ hydrateLocal: true, onlyIfEmpty: true });
   });
   document.getElementById("testConnectionBtn").addEventListener("click", async () => {
     state.data.settings.endpointUrl = endpoint.value.trim();
@@ -362,7 +415,9 @@ function init() {
   initCompareEvents();
   initSettings();
   renderAll();
-  refreshRemote();
+  if (state.data.settings.endpointUrl) {
+    refreshRemote({ hydrateLocal: true, onlyIfEmpty: true });
+  }
   setInterval(refreshRemote, POLL_MS);
 }
 
