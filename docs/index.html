@@ -1,0 +1,133 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>OSRS Bank Sync Viewer</title>
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <header class="app-header">
+      <h1>OSRS Bank Sync Viewer</h1>
+      <div id="globalStatus" class="status-line"></div>
+    </header>
+
+    <nav class="tabs" role="tablist">
+      <button class="tab active" data-tab="ad" role="tab">Ad The Saint</button>
+      <button class="tab" data-tab="sic" role="tab">Sic Saint</button>
+      <button class="tab" data-tab="compare" role="tab">Compare</button>
+      <button class="tab" data-tab="settings" role="tab">Settings</button>
+    </nav>
+
+    <main>
+      <section id="tab-ad" class="tab-panel active"></section>
+      <section id="tab-sic" class="tab-panel"></section>
+
+      <section id="tab-compare" class="tab-panel">
+        <h2>Compare banks</h2>
+        <div class="controls compare-controls">
+          <label><input type="checkbox" id="filterUniqueAd" /> Unique to Ad</label>
+          <label><input type="checkbox" id="filterUniqueSic" /> Unique to Sic</label>
+          <label><input type="checkbox" id="filterInBoth" /> In both</label>
+          <label><input type="checkbox" id="filterDifferencesOnly" /> Differences only</label>
+          <label>
+            Search
+            <input type="text" id="compareSearch" placeholder="Name or item id" />
+          </label>
+        </div>
+        <div id="compareSummary" class="summary-grid"></div>
+        <div class="table-wrap">
+          <table id="compareTable">
+            <thead>
+              <tr>
+                <th data-compare-sort="name">Item name</th>
+                <th data-compare-sort="id">Item id</th>
+                <th data-compare-sort="adQty">Qty (Ad)</th>
+                <th data-compare-sort="sicQty">Qty (Sic)</th>
+                <th data-compare-sort="delta">Delta (Ad - Sic)</th>
+              </tr>
+            </thead>
+            <tbody></tbody>
+          </table>
+        </div>
+      </section>
+
+      <section id="tab-settings" class="tab-panel">
+        <h2>Settings</h2>
+        <div class="settings-grid">
+          <label>
+            Apps Script endpoint URL
+            <input type="url" id="endpointUrl" placeholder="https://script.google.com/macros/s/.../exec" />
+          </label>
+          <label>
+            Shared secret
+            <input type="password" id="sharedSecret" placeholder="Write secret" />
+          </label>
+        </div>
+        <div class="actions-row">
+          <button id="saveSettingsBtn">Save settings</button>
+          <button id="testConnectionBtn">Test connection</button>
+        </div>
+        <p id="settingsStatus" class="status-line"></p>
+      </section>
+    </main>
+
+    <template id="playerTemplate">
+      <div class="player-view">
+        <h2 class="player-title"></h2>
+
+        <div class="import-grid">
+          <label class="drop-zone">
+            <input type="file" accept=".tsv,text/tab-separated-values,text/plain" class="file-input" hidden />
+            <span>Drag & drop TSV here or click to choose file</span>
+          </label>
+          <label>
+            Paste TSV
+            <textarea class="paste-area" rows="7" placeholder="Item id\tItem name\tItem quantity"></textarea>
+          </label>
+        </div>
+
+        <div class="actions-row">
+          <button class="importPasteBtn">Import pasted TSV</button>
+          <button class="syncNowBtn">Sync now</button>
+          <button class="pullLatestBtn">Pull latest</button>
+          <button class="resetLocalBtn danger">Reset local</button>
+        </div>
+
+        <div class="summary-grid">
+          <div><strong>Unique items:</strong> <span class="sumUnique">0</span></div>
+          <div><strong>Total qty:</strong> <span class="sumTotalQty">0</span></div>
+          <div><strong>Last imported (local):</strong> <span class="sumImported">—</span></div>
+          <div><strong>Last synced (remote):</strong> <span class="sumSynced">—</span></div>
+          <div><strong>Last updated (remote):</strong> <span class="sumUpdated">—</span></div>
+          <div><strong>Status:</strong> <span class="sumStatus">Ready</span></div>
+        </div>
+
+        <div class="controls">
+          <label>
+            Search
+            <input type="text" class="searchInput" placeholder="Name or item id" />
+          </label>
+          <label><input type="checkbox" class="unknownOnly" /> Show only Unknown/blank names</label>
+        </div>
+
+        <div class="table-wrap">
+          <table class="playerTable">
+            <thead>
+              <tr>
+                <th data-sort="name">Item name</th>
+                <th data-sort="id">Item id</th>
+                <th data-sort="qty">Quantity</th>
+              </tr>
+            </thead>
+            <tbody></tbody>
+          </table>
+        </div>
+
+        <ul class="warnings"></ul>
+      </div>
+    </template>
+
+    <script src="app.js"></script>
+  </body>
+</html>
