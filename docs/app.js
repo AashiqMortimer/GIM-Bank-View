@@ -15,12 +15,38 @@ const state = {
 };
 
 function defaultPlayerState() {
-  return { snapshot: { items: [], meta: {} }, lastImportLocal: null, lastSyncedRemote: null, warnings: [] };
+  return {
+    snapshot: { items: [], meta: {} },
+    hiddenIds: [],
+    timestamps: {
+      remoteSnapshotLastUpdatedUtc: null,
+      remoteHiddenLastUpdatedUtc: null,
+      localImportedAt: null,
+      lastRefresh: null,
+    },
+    lastSyncedRemote: null,
+    warnings: [],
+    showHiddenItems: false,
+  };
+}
+
+function normalizePlayerState(raw) {
+  const base = defaultPlayerState();
+  const normalized = { ...base, ...(raw || {}) };
+  const oldImportedAt = normalized.lastImportLocal || normalized.timestamps?.localImportedAt || null;
+  normalized.timestamps = { ...base.timestamps, ...(normalized.timestamps || {}), localImportedAt: oldImportedAt };
+  normalized.hiddenIds = Array.isArray(normalized.hiddenIds) ? normalized.hiddenIds.map(Number).filter(Number.isFinite) : [];
+  normalized.snapshot = {
+    items: Array.isArray(normalized.snapshot?.items) ? normalized.snapshot.items : [],
+    meta: normalized.snapshot?.meta || {},
+  };
+  delete normalized.lastImportLocal;
+  return normalized;
 }
 
 function hasLocalSnapshot(player) {
   const pdata = state.data.players[player];
-  return Boolean(pdata.lastImportLocal && pdata.snapshot.items.length > 0);
+  return Boolean(pdata.timestamps.localImportedAt && pdata.snapshot.items.length > 0);
 }
 
 function canSyncPlayer(player) {
@@ -30,9 +56,9 @@ function canSyncPlayer(player) {
 
 function getFreshnessIndicator(player) {
   const local = state.data.players[player];
-  const remoteUpdatedUtc = state.remote.players?.[player]?.lastUpdatedUtc;
-  if (!local.lastImportLocal || !remoteUpdatedUtc) return "In sync";
-  const localTs = new Date(local.lastImportLocal).getTime();
+  const remoteUpdatedUtc = local.timestamps.remoteSnapshotLastUpdatedUtc;
+  if (!local.timestamps.localImportedAt || !remoteUpdatedUtc) return "In sync";
+  const localTs = new Date(local.timestamps.localImportedAt).getTime();
   const remoteTs = new Date(remoteUpdatedUtc).getTime();
   if (Number.isNaN(localTs) || Number.isNaN(remoteTs) || localTs === remoteTs) return "In sync";
   return remoteTs > localTs ? "Remote newer" : "Local newer";
@@ -49,7 +75,7 @@ function loadState() {
       const parsed = JSON.parse(raw);
       state.data.settings = parsed.settings || state.data.settings;
       PLAYERS.forEach((p) => {
-        state.data.players[p] = { ...defaultPlayerState(), ...(parsed.players?.[p] || {}) };
+        state.data.players[p] = normalizePlayerState(parsed.players?.[p]);
       });
       return;
     } catch (_) {}
@@ -119,11 +145,13 @@ function renderPlayerShell(player) {
   view.resetLocalBtn = q(".resetLocalBtn");
   view.searchInput = q(".searchInput");
   view.unknownOnly = q(".unknownOnly");
+  view.showHiddenItems = q(".showHiddenItems");
   view.tbody = q("tbody");
   view.warnings = q(".warnings");
   view.summary = {
     unique: q(".sumUnique"), totalQty: q(".sumTotalQty"), imported: q(".sumImported"),
     synced: q(".sumSynced"), updated: q(".sumUpdated"), refresh: q(".sumRefresh"), status: q(".sumStatus"),
+    hiddenUpdated: q(".sumHiddenUpdated"),
   };
 
   view.dropZone.addEventListener("click", () => view.fileInput.click());
@@ -149,6 +177,11 @@ function renderPlayerShell(player) {
   view.resetLocalBtn.addEventListener("click", () => resetLocal(player));
   view.searchInput.addEventListener("input", () => renderPlayerTable(player));
   view.unknownOnly.addEventListener("change", () => renderPlayerTable(player));
+  view.showHiddenItems.addEventListener("change", () => {
+    state.data.players[player].showHiddenItems = view.showHiddenItems.checked;
+    saveState();
+    renderPlayerTable(player);
+  });
   q("thead").addEventListener("click", (e) => {
     const th = e.target.closest("th[data-sort]");
     if (!th) return;
@@ -166,11 +199,16 @@ function toggleSort(viewKey, key) {
 function importTSV(player, text) {
   const parsed = parseTSV(text || "");
   const pdata = state.data.players[player];
-  pdata.snapshot = { items: parsed.items, meta: { importedAtLocal: new Date().toISOString(), source: "tsv", appVersion: APP_VERSION } };
-  pdata.lastImportLocal = new Date().toISOString();
+  const now = new Date().toISOString();
+  pdata.snapshot = { items: parsed.items, meta: { importedAtLocal: now, source: "tsv", appVersion: APP_VERSION } };
+  pdata.timestamps.localImportedAt = now;
   pdata.warnings = parsed.warnings;
   saveState();
   renderAll();
+}
+
+function getHiddenSet(player) {
+  return new Set(state.data.players[player].hiddenIds.map((id) => String(id)));
 }
 
 function getSortedItems(player) {
@@ -179,9 +217,12 @@ function getSortedItems(player) {
   const view = state.views[player];
   const term = view.searchInput.value.trim().toLowerCase();
   const unknownOnly = view.unknownOnly.checked;
+  const showHidden = view.showHiddenItems.checked;
+  const hidden = getHiddenSet(player);
   return [...state.data.players[player].snapshot.items]
     .filter((item) => !term || item.name.toLowerCase().includes(term) || String(item.id).includes(term))
     .filter((item) => !unknownOnly || !item.name || /^unknown$/i.test(item.name))
+    .filter((item) => showHidden || !hidden.has(String(item.id)))
     .sort((a, b) => {
       const av = a[s.key]; const bv = b[s.key];
       if (typeof av === "string") return av.localeCompare(bv) * s.dir;
@@ -192,25 +233,39 @@ function getSortedItems(player) {
 function renderPlayerTable(player) {
   const view = state.views[player];
   const items = getSortedItems(player);
-  view.tbody.innerHTML = items.map((i) => `<tr><td>${escapeHtml(i.name || "")}</td><td>${i.id}</td><td>${i.qty}</td></tr>`).join("");
+  const hidden = getHiddenSet(player);
+  view.tbody.innerHTML = items.map((i) => {
+    const isHidden = hidden.has(String(i.id));
+    return `<tr>
+      <td>${escapeHtml(i.name || "")}</td>
+      <td>${i.id}</td>
+      <td>${i.qty}</td>
+      <td><button type="button" class="hide-toggle-btn" data-item-id="${i.id}">${isHidden ? "Unhide" : "Hide"}</button></td>
+    </tr>`;
+  }).join("");
+
+  view.tbody.querySelectorAll(".hide-toggle-btn").forEach((btn) => {
+    btn.addEventListener("click", () => toggleHidden(player, Number(btn.dataset.itemId)));
+  });
 }
 
 function escapeHtml(s) { return String(s).replace(/[&<>"]/g, (m) => ({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;"}[m])); }
 
 function renderPlayerSummary(player) {
   const pdata = state.data.players[player];
-  const remote = state.remote.players[player];
   const totalQty = pdata.snapshot.items.reduce((sum, i) => sum + i.qty, 0);
   const view = state.views[player];
   const indicator = getFreshnessIndicator(player);
   const syncAllowed = canSyncPlayer(player);
   view.summary.unique.textContent = pdata.snapshot.items.length;
   view.summary.totalQty.textContent = totalQty;
-  view.summary.imported.textContent = formatTs(pdata.lastImportLocal);
+  view.summary.imported.textContent = formatTs(pdata.timestamps.localImportedAt);
   view.summary.synced.textContent = formatTs(pdata.lastSyncedRemote);
-  view.summary.updated.textContent = formatTs(remote?.lastUpdatedUtc);
-  view.summary.refresh.textContent = formatTs(state.remote.lastRefreshUtc);
+  view.summary.updated.textContent = formatTs(pdata.timestamps.remoteSnapshotLastUpdatedUtc);
+  view.summary.hiddenUpdated.textContent = formatTs(pdata.timestamps.remoteHiddenLastUpdatedUtc);
+  view.summary.refresh.textContent = formatTs(pdata.timestamps.lastRefresh);
   view.summary.status.textContent = indicator;
+  view.showHiddenItems.checked = Boolean(pdata.showHiddenItems);
   view.syncNowBtn.disabled = !syncAllowed;
   view.syncNowBtn.title = syncAllowed ? "" : "Import TSV with at least one item before syncing.";
   view.warnings.innerHTML = pdata.warnings.map((w) => `<li>${escapeHtml(w)}</li>`).join("");
@@ -239,23 +294,43 @@ function hydrateLocalFromRemote({ force = false, onlyIfEmpty = false } = {}) {
   PLAYERS.forEach((player) => {
     const remote = state.remote.players?.[player];
     const local = state.data.players[player];
-    if (!remote?.snapshot) return;
+    if (!remote) return;
+
+    local.hiddenIds = Array.isArray(remote.hidden) ? remote.hidden.map(Number).filter(Number.isFinite) : [];
+    local.timestamps.remoteHiddenLastUpdatedUtc = remote.hiddenLastUpdatedUtc || null;
+
+    if (!remote.snapshot) return;
     const localEmpty = !local.snapshot.items.length;
     if (!force && onlyIfEmpty && !localEmpty) return;
     if (!force && !onlyIfEmpty) return;
     local.snapshot = remote.snapshot;
-    local.lastImportLocal = remote.lastUpdatedUtc || new Date().toISOString();
+    local.timestamps.localImportedAt = remote.lastUpdatedUtc || new Date().toISOString();
     local.warnings = [];
     changed = true;
   });
   if (changed) saveState();
 }
 
+function applyRemoteToLocalTimestamps() {
+  PLAYERS.forEach((player) => {
+    const remote = state.remote.players?.[player] || {};
+    const local = state.data.players[player];
+    local.timestamps.remoteSnapshotLastUpdatedUtc = remote.lastUpdatedUtc || null;
+    local.timestamps.remoteHiddenLastUpdatedUtc = remote.hiddenLastUpdatedUtc || null;
+    local.timestamps.lastRefresh = state.remote.lastRefreshUtc;
+    if (Array.isArray(remote.hidden)) {
+      local.hiddenIds = remote.hidden.map(Number).filter(Number.isFinite);
+    }
+  });
+}
+
 async function refreshRemote({ hydrateLocal = false, onlyIfEmpty = false } = {}) {
   try {
     const data = await apiGet();
     state.remote = { ...state.remote, ...data, lastRefreshUtc: new Date().toISOString() };
+    applyRemoteToLocalTimestamps();
     if (hydrateLocal) hydrateLocalFromRemote({ force: !onlyIfEmpty, onlyIfEmpty });
+    saveState();
     renderAll();
     return true;
   } catch (err) {
@@ -271,11 +346,35 @@ async function syncNow(player) {
   if (isRemoteNewerThanLocal(player) && !confirm("Remote snapshot is newer than your local import. Syncing now will overwrite remote data. Continue?")) return;
   const snapshot = state.data.players[player].snapshot;
   try {
-    await apiPost({ secret, player, snapshot });
+    await apiPost({ secret, action: "setSnapshot", player, snapshot });
     state.data.players[player].lastSyncedRemote = new Date().toISOString();
     saveState();
     await refreshRemote();
   } catch (err) { alert(`Sync failed: ${err.message}`); }
+}
+
+async function persistHidden(player) {
+  const secret = state.data.settings.secret;
+  if (!secret || !state.data.settings.endpointUrl) return;
+  const hidden = state.data.players[player].hiddenIds;
+  try {
+    await apiPost({ secret, action: "setHidden", player, hidden });
+    await refreshRemote();
+  } catch (err) {
+    alert(`Failed to persist hidden items: ${err.message}`);
+  }
+}
+
+function toggleHidden(player, itemId) {
+  const pdata = state.data.players[player];
+  const ids = new Set(pdata.hiddenIds.map((id) => String(id)));
+  const key = String(itemId);
+  if (ids.has(key)) ids.delete(key);
+  else ids.add(key);
+  pdata.hiddenIds = [...ids].map(Number).filter(Number.isFinite);
+  saveState();
+  renderAll();
+  persistHidden(player);
 }
 
 async function pullLatest(player) {
@@ -283,11 +382,12 @@ async function pullLatest(player) {
   const remote = state.remote.players[player];
   if (!remote?.snapshot) { alert("No remote snapshot found for this player."); return; }
   const local = state.data.players[player];
-  const remoteNewer = remote.lastUpdatedUtc && local.lastImportLocal && new Date(remote.lastUpdatedUtc) > new Date(local.lastImportLocal);
+  const remoteNewer = remote.lastUpdatedUtc && local.timestamps.localImportedAt && new Date(remote.lastUpdatedUtc) > new Date(local.timestamps.localImportedAt);
   if (remoteNewer && local.snapshot.items.length && !confirm("Remote is newer and will overwrite local snapshot. Continue?")) return;
   local.snapshot = remote.snapshot;
-  local.lastImportLocal = remote.lastUpdatedUtc || new Date().toISOString();
+  local.timestamps.localImportedAt = remote.lastUpdatedUtc || new Date().toISOString();
   local.snapshot.meta = { ...(local.snapshot.meta || {}), source: "remote" };
+  local.hiddenIds = Array.isArray(remote.hidden) ? remote.hidden.map(Number).filter(Number.isFinite) : [];
   local.warnings = [];
   saveState();
   renderAll();
@@ -300,9 +400,15 @@ function resetLocal(player) {
   renderAll();
 }
 
+function buildCompareItems(player, includeHidden) {
+  const hidden = getHiddenSet(player);
+  return state.data.players[player].snapshot.items.filter((item) => includeHidden || !hidden.has(String(item.id)));
+}
+
 function renderCompare() {
-  const ad = new Map(state.data.players[PLAYERS[0]].snapshot.items.map((i) => [String(i.id), i]));
-  const sic = new Map(state.data.players[PLAYERS[1]].snapshot.items.map((i) => [String(i.id), i]));
+  const includeHidden = document.getElementById("includeHiddenCompare").checked;
+  const ad = new Map(buildCompareItems(PLAYERS[0], includeHidden).map((i) => [String(i.id), i]));
+  const sic = new Map(buildCompareItems(PLAYERS[1], includeHidden).map((i) => [String(i.id), i]));
   const ids = new Set([...ad.keys(), ...sic.keys()]);
   const rows = [...ids].map((id) => {
     const a = ad.get(id); const s = sic.get(id);
@@ -355,8 +461,8 @@ function renderCompare() {
 }
 
 function renderGlobalStatus() {
-  const adUpdated = state.remote.players?.[PLAYERS[0]]?.lastUpdatedUtc;
-  const sicUpdated = state.remote.players?.[PLAYERS[1]]?.lastUpdatedUtc;
+  const adUpdated = state.data.players?.[PLAYERS[0]]?.timestamps?.remoteSnapshotLastUpdatedUtc;
+  const sicUpdated = state.data.players?.[PLAYERS[1]]?.timestamps?.remoteSnapshotLastUpdatedUtc;
   const status = `Remote updated: Ad ${formatTs(adUpdated)} | Sic ${formatTs(sicUpdated)} | Last refresh: ${formatTs(state.remote.lastRefreshUtc)}`;
   document.getElementById("globalStatus").textContent = status;
 }
@@ -396,7 +502,7 @@ function initSettings() {
 }
 
 function initCompareEvents() {
-  ["filterUniqueAd", "filterUniqueSic", "filterInBoth", "filterDifferencesOnly", "compareSearch"].forEach((id) => {
+  ["filterUniqueAd", "filterUniqueSic", "filterInBoth", "filterDifferencesOnly", "compareSearch", "includeHiddenCompare"].forEach((id) => {
     document.getElementById(id).addEventListener("input", renderCompare);
     document.getElementById(id).addEventListener("change", renderCompare);
   });

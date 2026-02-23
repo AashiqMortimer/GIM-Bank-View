@@ -33,6 +33,7 @@
           <label><input type="checkbox" id="filterUniqueSic" /> Unique to Sic</label>
           <label><input type="checkbox" id="filterInBoth" /> In both</label>
           <label><input type="checkbox" id="filterDifferencesOnly" /> Differences only</label>
+          <label><input type="checkbox" id="includeHiddenCompare" /> Include hidden in compare</label>
           <label>
             Search
             <input type="text" id="compareSearch" placeholder="Name or item id" />
@@ -103,6 +104,7 @@
           <div><strong>Last imported (local):</strong> <span class="sumImported">—</span></div>
           <div><strong>Last synced (remote):</strong> <span class="sumSynced">—</span></div>
           <div><strong>Last updated (remote):</strong> <span class="sumUpdated">—</span></div>
+          <div><strong>Hidden updated (remote):</strong> <span class="sumHiddenUpdated">—</span></div>
           <div><strong>Last refresh:</strong> <span class="sumRefresh">—</span></div>
           <div><strong>Indicator:</strong> <span class="sumStatus">In sync</span></div>
         </div>
@@ -113,6 +115,7 @@
             <input type="text" class="searchInput" placeholder="Name or item id" />
           </label>
           <label><input type="checkbox" class="unknownOnly" /> Show only Unknown/blank names</label>
+          <label><input type="checkbox" class="showHiddenItems" /> Show hidden items</label>
         </div>
 
         <div class="table-wrap">
@@ -122,6 +125,7 @@
                 <th data-sort="name">Item name</th>
                 <th data-sort="id">Item id</th>
                 <th data-sort="qty">Quantity</th>
+                <th>Hidden</th>
               </tr>
             </thead>
             <tbody></tbody>
