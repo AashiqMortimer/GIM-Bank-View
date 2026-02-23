@@ -282,7 +282,7 @@ async function apiGet() {
 async function apiPost(payload) {
   const res = await fetch(state.data.settings.endpointUrl, {
     method: "POST",
-    headers: { "Content-Type": "text/plain;charset=utf-8" },
+    headers: { "Content-Type": "text/plain;charset=utf-8" }, // <- important
     body: JSON.stringify(payload),
   });
   if (!res.ok) throw new Error(`POST failed: ${res.status}`);
