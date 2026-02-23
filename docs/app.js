@@ -282,7 +282,7 @@ async function apiGet() {
 async function apiPost(payload) {
   const res = await fetch(state.data.settings.endpointUrl, {
     method: "POST",
-    headers: { "Content-Type": "text/plain;charset=utf-8" },
+    headers: { "Content-Type": "application/json" },
     body: JSON.stringify(payload),
   });
   if (!res.ok) throw new Error(`POST failed: ${res.status}`);
@@ -524,7 +524,7 @@ function init() {
   if (state.data.settings.endpointUrl) {
     refreshRemote({ hydrateLocal: true, onlyIfEmpty: true });
   }
-  setInterval(refreshRemote, POLL_MS);
+  setInterval(() => refreshRemote(), POLL_MS);
 }
 
 init();
