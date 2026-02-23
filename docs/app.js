@@ -57,7 +57,9 @@ function canSyncPlayer(player) {
 function getFreshnessIndicator(player) {
   const local = state.data.players[player];
   const remoteUpdatedUtc = local.timestamps.remoteSnapshotLastUpdatedUtc;
-  if (!local.timestamps.localImportedAt || !remoteUpdatedUtc) return "In sync";
+  if (!local.timestamps.localImportedAt && !remoteUpdatedUtc) return "No data yet";
+  if (!local.timestamps.localImportedAt) return "Remote only";
+  if (!remoteUpdatedUtc) return "Local only";
   const localTs = new Date(local.timestamps.localImportedAt).getTime();
   const remoteTs = new Date(remoteUpdatedUtc).getTime();
   if (Number.isNaN(localTs) || Number.isNaN(remoteTs) || localTs === remoteTs) return "In sync";
@@ -272,19 +274,28 @@ function renderPlayerSummary(player) {
 }
 
 async function apiGet() {
-  const url = state.data.settings.endpointUrl;
-  if (!url) throw new Error("Endpoint URL missing.");
-  const res = await fetch(url, { method: "GET" });
+  const base = state.data.settings.endpointUrl;
+  if (!base) throw new Error("Endpoint URL missing.");
+
+  const url = base.includes("?")
+    ? `${base}&_t=${Date.now()}`
+    : `${base}?_t=${Date.now()}`;
+
+  const res = await fetch(url, { method: "GET", cache: "no-store" });
   if (!res.ok) throw new Error(`GET failed: ${res.status}`);
   return res.json();
 }
 
 async function apiPost(payload) {
-  const res = await fetch(state.data.settings.endpointUrl, {
+  const url = state.data.settings.endpointUrl;
+  if (!url) throw new Error("Endpoint URL missing.");
+
+  const res = await fetch(url, {
     method: "POST",
-    headers: { "Content-Type": "text/plain;charset=utf-8" }, // <- important
+    headers: { "Content-Type": "text/plain;charset=utf-8" },
     body: JSON.stringify(payload),
   });
+
   if (!res.ok) throw new Error(`POST failed: ${res.status}`);
   return res.json();
 }
@@ -365,16 +376,25 @@ async function persistHidden(player) {
   }
 }
 
+const persistHiddenTimers = {};
+
+function persistHiddenDebounced(player) {
+  clearTimeout(persistHiddenTimers[player]);
+  persistHiddenTimers[player] = setTimeout(() => persistHidden(player), 500);
+}
+
 function toggleHidden(player, itemId) {
   const pdata = state.data.players[player];
   const ids = new Set(pdata.hiddenIds.map((id) => String(id)));
   const key = String(itemId);
   if (ids.has(key)) ids.delete(key);
   else ids.add(key);
+
   pdata.hiddenIds = [...ids].map(Number).filter(Number.isFinite);
   saveState();
   renderAll();
-  persistHidden(player);
+
+  persistHiddenDebounced(player);
 }
 
 async function pullLatest(player) {
